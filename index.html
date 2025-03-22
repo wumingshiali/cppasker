@@ -70,6 +70,13 @@
                 </div>
 
                 <div class="field has-addons">
+                    <div class="control">
+                        <div class="select" style="width: 125px;">
+                            <select id="modelSelect" title="选择模型">
+                                <!-- 动态生成模型选项 -->
+                            </select>
+                        </div>
+                    </div>
                     <div class="control is-expanded">
                         <textarea 
                             class="input is-rounded" 
@@ -99,7 +106,7 @@
 
         let messagesHistory = [{
             role: "system",
-            content: "您是一位资深C++导师，用中文逐步解释问题，提供代码示例，用类比帮助理解。回答使用Markdown格式。"
+            content: "您是一位资深C++导师，用中文逐步解释问题，提供代码示例，用类比帮助理解。回答使用Markdown格式。",
         }];
 
         // 初始化Markdown解析器
@@ -107,7 +114,7 @@
             highlight: function(code, lang) {
                 return hljs.highlightAuto(code).value;
             },
-            breaks: true
+            breaks: true,
         });
 
         // 处理输入框按键
@@ -130,17 +137,19 @@
         function appendMessage(role, content) {
             const container = document.getElementById('chatContainer');
             const isAssistant = role === 'assistant';
-            
+
             const messageDiv = document.createElement('article');
             messageDiv.className = `message ${isAssistant ? 'is-info' : 'is-success'} message-container`;
-            
+
             const bodyDiv = document.createElement('div');
             bodyDiv.className = 'message-body' + (role === 'user' ? ' user-message' : '');
-            bodyDiv.innerHTML = role === 'assistant' ? marked.parse(content) : content.replace(/\n/g, '<br>');
+            bodyDiv.innerHTML = role === 'assistant' 
+                ? marked.parse(content.replace(/</g, '&lt;').replace(/>/g, '&gt;')) // 转义特殊字符
+                : content.replace(/\n/g, '<br>').replace(/</g, '&lt;').replace(/>/g, '&gt;'); // 转义特殊字符
 
             messageDiv.appendChild(bodyDiv);
             container.appendChild(messageDiv);
-            
+
             // 自动滚动到底部
             container.scrollTop = container.scrollHeight;
             return messageDiv;
@@ -168,7 +177,7 @@
                                 try {
                                     const data = JSON.parse(line.slice(6));
                                     const content = data.choices[0]?.delta?.content || '';
-                                    fullContent += content;
+                                    // fullContent += content.replace(/</g, '&lt;').replace(/>/g, '&gt;'); // 转义特殊字符
                                     messageDiv.innerHTML = marked.parse(fullContent);
                                     hljs.highlightAll();
                                 } catch(e) {
@@ -191,6 +200,13 @@
             if (!message) return;
 
             try {
+                // 获取用户选择的模型
+                const selectedModel = document.getElementById('modelSelect').value;
+                if (!selectedModel) {
+                    appendMessage('error', '请选择一个有效的模型');
+                    return;
+                }
+
                 // 添加用户消息
                 messagesHistory.push({ role: 'user', content: message });
                 appendMessage('user', message);
@@ -201,15 +217,28 @@
                 const assistantMsg = appendMessage('assistant', '');
                 const bodyDiv = assistantMsg.querySelector('.message-body');
 
+                await sendRequestWithRetry(bodyDiv, 3, selectedModel); // 设置最大重试次数为3次，并传递模型ID
+            } catch (error) {
+                console.error('请求错误:', error);
+                appendMessage('error', `系统错误：${error.message}`);
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+                userInput.style.height = 'auto'; // 重置输入框高度
+            }
+        }
+
+        // 重试发送消息
+        async function sendRequestWithRetry(bodyDiv, maxRetries, model) {
+            try {
                 const response = await fetch(API_URL, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${API_KEY}`,
                         'Content-Type': 'application/json',
-                        'HTTP-Referer': window.location.href
+                        'HTTP-Referer': window.location.href,
                     },
                     body: JSON.stringify({
-                        model: "deepseek/deepseek-r1:free",
+                        model: model, // 使用用户选择的模型
                         messages: messagesHistory,
                         temperature: 0.7,
                         stream: true,
@@ -224,21 +253,23 @@
 
                 const reader = response.body.getReader();
                 const fullContent = await processStream(reader, bodyDiv);
-                
+        
                 // 更新历史记录
                 messagesHistory.push({ 
                     role: 'assistant', 
                     content: fullContent 
                 });
-
             } catch(error) {
                 console.error('请求错误:', error);
-                appendMessage('error', `系统错误：${error.message}`);
-            } finally {
-                document.getElementById('loading').style.display = 'none';
-                userInput.style.height = 'auto'; // 重置输入框高度
+                if (maxRetries > 0) {
+                    console.log(`重试发送消息，剩余重试次数: ${maxRetries - 1}`);
+                    await sendRequestWithRetry(bodyDiv, maxRetries - 1, model); // 递归重试
+                } else {
+                    appendMessage('error', `系统错误：${error.message}`);
+                }
             }
         }
     </script>
 </body>
 </html>
+
